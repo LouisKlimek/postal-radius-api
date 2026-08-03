@@ -41,6 +41,20 @@ Optional query parameters:
 
 `MAX_RADIUS_KM` caps accepted radius values. It defaults to `500`; set it when starting the service to use a smaller operational bound, for example `MAX_RADIUS_KM=250 gunicorn --bind :9090 app:app`.
 
+### Request rate limiting
+
+`/v1/postal-codes/nearby` is protected by an in-process, per-client-IP fixed-window limit. `RATE_LIMIT_PER_MINUTE` controls the limit and defaults to `120` requests per minute. Requests above the limit receive HTTP `429` with the stable response body:
+
+```json
+{"error":{"code":"rate_limited","message":"request rate limit exceeded; retry later"}}
+```
+
+The response also includes `Retry-After` (whole seconds until the current window resets). `/health` is not rate limited.
+
+By default the limiter uses the direct peer address and ignores forwarded client-IP headers such as `X-Forwarded-For`. Set `TRUST_PROXY_HEADERS=true` only when the application is deployed behind a proxy that strips client-supplied forwarding headers and sets them itself; when enabled, the first `X-Forwarded-For` value is used as the client IP.
+
+This protection is intentionally limited to one application process/container. It does not provide a shared global quota across replicas, processes, restarts, or hosts. Multi-replica global rate limiting requires a shared external store or a gateway/load-balancer policy.
+
 Example:
 
 ```bash
