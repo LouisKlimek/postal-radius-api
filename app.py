@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +15,9 @@ EARTH_RADIUS_KM = 6371.0088
 VALID_COUNTRIES = {"DE", "AT", "CH"}
 VALID_ORDERS = {"asc", "desc"}
 GRID_CELL_DEGREES = 1.0
+DEFAULT_MAX_RADIUS_KM = 500
+DEFAULT_LIMIT = 1000
+MAX_LIMIT = 1000
 
 
 @lru_cache(maxsize=1)
@@ -89,11 +93,20 @@ def error_response(status: int, code: str, message: str):
     return jsonify({"error": {"code": code, "message": message}}), status
 
 
-def parse_query() -> tuple[dict[str, object] | None, tuple[object, int] | None]:
+def configured_max_radius_km() -> int:
+    value = os.getenv("MAX_RADIUS_KM", str(DEFAULT_MAX_RADIUS_KM)).strip()
+    if value.isdigit() and int(value) > 0:
+        return int(value)
+    return DEFAULT_MAX_RADIUS_KM
+
+
+def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[object, int] | None]:
     country = request.args.get("country", "").strip().upper()
     postal_code = request.args.get("postal_code", "").strip()
     radius_value = request.args.get("radius_km", "").strip()
     order = request.args.get("order", "asc").strip().lower()
+    limit_value = request.args.get("limit", str(DEFAULT_LIMIT)).strip()
+    offset_value = request.args.get("offset", "0").strip()
 
     if country not in VALID_COUNTRIES:
         return None, error_response(400, "invalid_request", "country must be one of DE, AT, CH")
@@ -101,13 +114,25 @@ def parse_query() -> tuple[dict[str, object] | None, tuple[object, int] | None]:
         return None, error_response(400, "invalid_request", "postal_code is required")
     if not radius_value.isdigit() or int(radius_value) <= 0:
         return None, error_response(400, "invalid_request", "radius_km must be a positive integer")
+    if int(radius_value) > max_radius_km:
+        return None, error_response(
+            400,
+            "invalid_request",
+            f"radius_km must not exceed MAX_RADIUS_KM ({max_radius_km})",
+        )
     if order not in VALID_ORDERS:
         return None, error_response(400, "invalid_request", "order must be asc or desc")
+    if not limit_value.isdigit() or not 1 <= int(limit_value) <= MAX_LIMIT:
+        return None, error_response(400, "invalid_request", "limit must be an integer between 1 and 1000")
+    if not offset_value.isdigit():
+        return None, error_response(400, "invalid_request", "offset must be a non-negative integer")
     return {
         "country": country,
         "postal_code": postal_code,
         "radius_km": int(radius_value),
         "order": order,
+        "limit": int(limit_value),
+        "offset": int(offset_value),
     }, None
 
 
@@ -122,6 +147,7 @@ def distance_km(first: dict[str, object], second: dict[str, object]) -> float:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    app.config["MAX_RADIUS_KM"] = configured_max_radius_km()
 
     @app.get("/health")
     def health():
@@ -129,7 +155,7 @@ def create_app() -> Flask:
 
     @app.get("/v1/postal-codes/nearby")
     def nearby():
-        query, query_error = parse_query()
+        query, query_error = parse_query(app.config["MAX_RADIUS_KM"])
         if query_error:
             return query_error
         assert query is not None
@@ -158,11 +184,25 @@ def create_app() -> Flask:
                     "city_name": candidate["city_name"],
                     "distance_km": round(calculated_distance, 3),
                 })
-        results.sort(
-            key=lambda item: (item["distance_km"], item["country"], item["postal_code"]),
-            reverse=query["order"] == "desc",
+        if query["order"] == "asc":
+            results.sort(key=lambda item: (item["distance_km"], item["country"], item["postal_code"]))
+        else:
+            results.sort(key=lambda item: (-item["distance_km"], item["country"], item["postal_code"]))
+
+        total_results = len(results)
+        offset = int(query["offset"])
+        limit = int(query["limit"])
+        page = results[offset : offset + limit]
+        return jsonify(
+            {
+                "query": query,
+                "results": page,
+                "total_results": total_results,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + limit < total_results,
+            }
         )
-        return jsonify({"query": query, "results": results})
 
     return app
 

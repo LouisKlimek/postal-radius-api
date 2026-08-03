@@ -33,9 +33,13 @@ Required query parameters:
 - `postal_code`: postal code as a string; leading zeroes are retained
 - `radius_km`: positive integer radius in kilometres
 
-Optional query parameter:
+Optional query parameters:
 
 - `order`: `asc` (default) or `desc`
+- `limit`: positive integer number of records to return (default and maximum: `1000`)
+- `offset`: zero-based number of matching records to skip (default: `0`)
+
+`MAX_RADIUS_KM` caps accepted radius values. It defaults to `500`; set it when starting the service to use a smaller operational bound, for example `MAX_RADIUS_KM=250 gunicorn --bind :9090 app:app`.
 
 Example:
 
@@ -48,6 +52,28 @@ curl --get 'http://localhost:9090/v1/postal-codes/nearby' \
 ```
 
 Successful responses contain normalized input under `query` and ordered `results`. Every result contains `country`, `postal_code`, `city_name`, and `distance_km` (rounded to three decimal places). Distances use the Haversine great-circle calculation with the IUGG mean Earth radius (6,371.0088 km). Results outside the requested radius are omitted.
+
+### Pagination compatibility
+
+`v1` successful responses now include `total_results`, `limit`, `offset`, and `has_more`. Existing clients still receive the same `query` and `results` fields, but `results` is capped at the default `limit` of 1,000. Clients that need every match must follow pages using the returned metadata. Results are ordered by distance, then by `country` and `postal_code` for stable pagination; `desc` reverses distance while retaining the country/postal-code tie-breaker.
+
+Fetch the first page and then its following page:
+
+```bash
+curl --get 'http://localhost:9090/v1/postal-codes/nearby' \
+  --data-urlencode country=DE \
+  --data-urlencode postal_code=01067 \
+  --data-urlencode radius_km=100 \
+  --data-urlencode limit=100 \
+  --data-urlencode offset=0
+
+curl --get 'http://localhost:9090/v1/postal-codes/nearby' \
+  --data-urlencode country=DE \
+  --data-urlencode postal_code=01067 \
+  --data-urlencode radius_km=100 \
+  --data-urlencode limit=100 \
+  --data-urlencode offset=100
+```
 
 Invalid parameters return HTTP 400 with:
 
