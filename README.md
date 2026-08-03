@@ -67,6 +67,14 @@ An unknown country/postal-code pair returns HTTP 404 with:
 
 The GeoNames export can contain more than one row for a country/postal-code pair. During generation, this service deterministically selects the lexicographically smallest tuple `(city_name, latitude, longitude)` for that pair. Therefore the selected `city_name` is stable and documented, rather than dependent on source-file ordering.
 
+### In-memory spatial index
+
+The CSV remains the sole canonical runtime dataset: the service does not use a database, download data at runtime, or make geodata network calls. On its first cached data load, it assigns every canonical record to a deterministic 1° latitude/longitude grid cell and keeps that index in memory alongside the postal-code lookup map.
+
+For a nearby request, the service derives a latitude/longitude bounding box from the requested radius, enumerates only intersecting grid cells, then applies a record-level bounding-box filter before running Haversine. Haversine remains the final inclusion decision, so the response preserves exact-radius semantics, city names, and ordering. Longitude extent uses the spherical bound and a pole-safe guard; all supported DACH locations are within its normal range.
+
+The index is rebuilt automatically whenever the process first loads an updated CSV. There is no separate index artifact or migration: replace the versioned CSV and update `DATA_FILE` as described below, then restart/rebuild the image.
+
 ### Update data
 
 Download `https://download.geonames.org/export/zip/DE.zip`, `AT.zip`, and `CH.zip`; read each tab-separated `<COUNTRY>.txt`; group by `(country, postal_code)`; choose the smallest `(place_name, latitude, longitude)` tuple; then write the resulting CSV with the same header and a new date-stamped filename. Update `DATA_FILE` in `app.py`, this README's version/date, and run the tests before building an image.
