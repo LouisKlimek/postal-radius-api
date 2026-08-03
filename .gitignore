@@ -1,0 +1,4 @@
+# Ignore local Python artifacts
+__pycache__/
+.venv/
+.pytest_cache/
