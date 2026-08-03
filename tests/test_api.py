@@ -28,6 +28,8 @@ def test_nearby_preserves_leading_zero_and_returns_distance_zero():
         "postal_code": "01067",
         "radius_km": 1,
         "order": "asc",
+        "limit": 1000,
+        "offset": 0,
     }
     assert payload["results"][0]["postal_code"] == "01067"
     assert payload["results"][0]["city_name"] == "Dresden"
@@ -72,6 +74,37 @@ def test_nearby_rejects_invalid_input_and_unknown_postal_code():
     assert unknown.get_json()["error"]["code"] == "postal_code_not_found"
 
 
+def test_nearby_rejects_radius_over_configured_maximum(monkeypatch):
+    monkeypatch.setenv("MAX_RADIUS_KM", "25")
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "01067", "radius_km": "26"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": {
+            "code": "invalid_request",
+            "message": "radius_km must not exceed MAX_RADIUS_KM (25)",
+        }
+    }
+
+
+def test_nearby_rejects_invalid_limit_and_offset():
+    base_query = {"country": "DE", "postal_code": "01067", "radius_km": "100"}
+    invalid_cases = (
+        ({**base_query, "limit": "0"}, "limit must be an integer between 1 and 1000"),
+        ({**base_query, "limit": "1001"}, "limit must be an integer between 1 and 1000"),
+        ({**base_query, "limit": "one"}, "limit must be an integer between 1 and 1000"),
+        ({**base_query, "offset": "-1"}, "offset must be a non-negative integer"),
+        ({**base_query, "offset": "one"}, "offset must be a non-negative integer"),
+    )
+    for query, message in invalid_cases:
+        response = client().get("/v1/postal-codes/nearby", query_string=query)
+        assert response.status_code == 400
+        assert response.get_json() == {"error": {"code": "invalid_request", "message": message}}
+
+
 def brute_force_results(country: str, postal_code: str, radius_km: int):
     by_postal_code, all_postal_codes, _ = postal_api.load_postal_codes()
     origin = by_postal_code[(country, postal_code)]
@@ -105,7 +138,11 @@ def test_indexed_results_match_brute_force_for_dach_small_and_large_radii():
         )
 
         assert response.status_code == 200
-        assert response.get_json()["results"] == brute_force_results(country, postal_code, radius_km)
+        payload = response.get_json()
+        expected = brute_force_results(country, postal_code, radius_km)
+        assert payload["results"] == expected[:1000]
+        assert payload["total_results"] == len(expected)
+        assert payload["has_more"] is (len(expected) > 1000)
 
 
 def test_index_skips_haversine_for_small_radius_non_candidates(monkeypatch):
@@ -126,3 +163,34 @@ def test_index_skips_haversine_for_small_radius_non_candidates(monkeypatch):
 
     assert response.status_code == 200
     assert calls < len(all_postal_codes)
+
+
+def test_nearby_pagination_returns_complete_non_overlapping_pages():
+    base_query = {"country": "DE", "postal_code": "01067", "radius_km": "100", "limit": "7"}
+    first = client().get("/v1/postal-codes/nearby", query_string=base_query).get_json()
+    assert first["limit"] == 7
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+
+    pages = []
+    for offset in range(0, first["total_results"], first["limit"]):
+        payload = client().get(
+            "/v1/postal-codes/nearby", query_string={**base_query, "offset": str(offset)}
+        ).get_json()
+        pages.extend(payload["results"])
+        assert payload["offset"] == offset
+        assert payload["has_more"] is (offset + first["limit"] < first["total_results"])
+
+    assert len(pages) == first["total_results"]
+    assert len({(item["country"], item["postal_code"]) for item in pages}) == len(pages)
+    assert pages == brute_force_results("DE", "01067", 100)
+
+
+def test_nearby_descending_order_has_stable_country_postal_tiebreaker():
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "01067", "radius_km": "100", "order": "desc", "limit": "1000"},
+    )
+
+    results = response.get_json()["results"]
+    assert results == sorted(results, key=lambda item: (-item["distance_km"], item["country"], item["postal_code"]))
