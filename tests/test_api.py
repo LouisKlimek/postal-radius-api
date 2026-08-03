@@ -15,6 +15,59 @@ def test_healthcheck_returns_service_status():
     assert response.get_json() == {"status": "ok"}
 
 
+def valid_nearby_query():
+    return {"country": "DE", "postal_code": "01067", "radius_km": "1"}
+
+
+def test_nearby_rate_limit_returns_stable_json_and_retry_after(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    test_client = client()
+
+    assert test_client.get("/v1/postal-codes/nearby", query_string=valid_nearby_query()).status_code == 200
+    assert test_client.get("/v1/postal-codes/nearby", query_string=valid_nearby_query()).status_code == 200
+    limited = test_client.get("/v1/postal-codes/nearby", query_string=valid_nearby_query())
+
+    assert limited.status_code == 429
+    assert limited.get_json() == {
+        "error": {
+            "code": "rate_limited",
+            "message": "request rate limit exceeded; retry later",
+        }
+    }
+    assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_health_is_exempt_from_nearby_rate_limit(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1")
+    test_client = client()
+
+    assert test_client.get("/v1/postal-codes/nearby", query_string=valid_nearby_query()).status_code == 200
+    assert test_client.get("/health").status_code == 200
+    assert test_client.get("/health").status_code == 200
+    assert test_client.get("/v1/postal-codes/nearby", query_string=valid_nearby_query()).status_code == 429
+
+
+def test_rate_limit_configuration_and_proxy_trust_boundary(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1")
+    untrusted_client = client()
+
+    assert untrusted_client.get(
+        "/v1/postal-codes/nearby", query_string=valid_nearby_query(), headers={"X-Forwarded-For": "198.51.100.1"}
+    ).status_code == 200
+    assert untrusted_client.get(
+        "/v1/postal-codes/nearby", query_string=valid_nearby_query(), headers={"X-Forwarded-For": "198.51.100.2"}
+    ).status_code == 429
+
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
+    trusted_client = client()
+    assert trusted_client.get(
+        "/v1/postal-codes/nearby", query_string=valid_nearby_query(), headers={"X-Forwarded-For": "198.51.100.1"}
+    ).status_code == 200
+    assert trusted_client.get(
+        "/v1/postal-codes/nearby", query_string=valid_nearby_query(), headers={"X-Forwarded-For": "198.51.100.2"}
+    ).status_code == 200
+
+
 def test_nearby_preserves_leading_zero_and_returns_distance_zero():
     response = client().get(
         "/v1/postal-codes/nearby",

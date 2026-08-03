@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import math
 import os
+import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -18,6 +20,7 @@ GRID_CELL_DEGREES = 1.0
 DEFAULT_MAX_RADIUS_KM = 500
 DEFAULT_LIMIT = 1000
 MAX_LIMIT = 1000
+DEFAULT_RATE_LIMIT_PER_MINUTE = 120
 
 
 @lru_cache(maxsize=1)
@@ -89,8 +92,11 @@ def grid_candidates(
                     yield candidate
 
 
-def error_response(status: int, code: str, message: str):
-    return jsonify({"error": {"code": code, "message": message}}), status
+def error_response(status: int, code: str, message: str, headers: dict[str, str] | None = None):
+    response = jsonify({"error": {"code": code, "message": message}})
+    if headers:
+        response.headers.update(headers)
+    return response, status
 
 
 def configured_max_radius_km() -> int:
@@ -98,6 +104,38 @@ def configured_max_radius_km() -> int:
     if value.isdigit() and int(value) > 0:
         return int(value)
     return DEFAULT_MAX_RADIUS_KM
+
+
+def configured_rate_limit_per_minute() -> int:
+    value = os.getenv("RATE_LIMIT_PER_MINUTE", str(DEFAULT_RATE_LIMIT_PER_MINUTE)).strip()
+    if value.isdigit() and int(value) > 0:
+        return int(value)
+    return DEFAULT_RATE_LIMIT_PER_MINUTE
+
+
+def configured_trusted_proxy_headers() -> bool:
+    return os.getenv("TRUST_PROXY_HEADERS", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class ClientRateLimiter:
+    """Fixed-window in-memory request counter for one application process."""
+
+    def __init__(self, requests_per_minute: int):
+        self.requests_per_minute = requests_per_minute
+        self._clients: dict[str, tuple[float, int]] = {}
+        self._lock = threading.Lock()
+
+    def retry_after(self, client_ip: str) -> int | None:
+        now = time.monotonic()
+        with self._lock:
+            window_started, request_count = self._clients.get(client_ip, (now, 0))
+            elapsed = now - window_started
+            if elapsed >= 60:
+                window_started, request_count = now, 0
+            if request_count >= self.requests_per_minute:
+                return max(1, math.ceil(60 - elapsed))
+            self._clients[client_ip] = (window_started, request_count + 1)
+            return None
 
 
 def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[object, int] | None]:
@@ -148,6 +186,17 @@ def distance_km(first: dict[str, object], second: dict[str, object]) -> float:
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config["MAX_RADIUS_KM"] = configured_max_radius_km()
+    app.config["RATE_LIMIT_PER_MINUTE"] = configured_rate_limit_per_minute()
+    app.config["TRUST_PROXY_HEADERS"] = configured_trusted_proxy_headers()
+    rate_limiter = ClientRateLimiter(app.config["RATE_LIMIT_PER_MINUTE"])
+
+    def client_ip() -> str:
+        if app.config["TRUST_PROXY_HEADERS"]:
+            forwarded_for = request.headers.get("X-Forwarded-For", "")
+            forwarded_client = forwarded_for.split(",", 1)[0].strip()
+            if forwarded_client:
+                return forwarded_client
+        return request.remote_addr or "unknown"
 
     @app.get("/health")
     def health():
@@ -155,6 +204,14 @@ def create_app() -> Flask:
 
     @app.get("/v1/postal-codes/nearby")
     def nearby():
+        retry_after = rate_limiter.retry_after(client_ip())
+        if retry_after is not None:
+            return error_response(
+                429,
+                "rate_limited",
+                "request rate limit exceeded; retry later",
+                {"Retry-After": str(retry_after)},
+            )
         query, query_error = parse_query(app.config["MAX_RADIUS_KM"])
         if query_error:
             return query_error
