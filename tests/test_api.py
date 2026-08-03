@@ -1,3 +1,4 @@
+import app as postal_api
 from app import create_app
 
 
@@ -69,3 +70,59 @@ def test_nearby_rejects_invalid_input_and_unknown_postal_code():
     )
     assert unknown.status_code == 404
     assert unknown.get_json()["error"]["code"] == "postal_code_not_found"
+
+
+def brute_force_results(country: str, postal_code: str, radius_km: int):
+    by_postal_code, all_postal_codes, _ = postal_api.load_postal_codes()
+    origin = by_postal_code[(country, postal_code)]
+    results = []
+    for candidate in all_postal_codes:
+        distance = postal_api.distance_km(origin, candidate)
+        if distance <= radius_km:
+            results.append(
+                {
+                    "country": candidate["country"],
+                    "postal_code": candidate["postal_code"],
+                    "city_name": candidate["city_name"],
+                    "distance_km": round(distance, 3),
+                }
+            )
+    return sorted(results, key=lambda item: (item["distance_km"], item["country"], item["postal_code"]))
+
+
+def test_indexed_results_match_brute_force_for_dach_small_and_large_radii():
+    for country, postal_code, radius_km in (
+        ("DE", "01067", 3),
+        ("DE", "01067", 500),
+        ("AT", "1000", 3),
+        ("AT", "1000", 500),
+        ("CH", "1000", 3),
+        ("CH", "1000", 500),
+    ):
+        response = client().get(
+            "/v1/postal-codes/nearby",
+            query_string={"country": country, "postal_code": postal_code, "radius_km": radius_km},
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["results"] == brute_force_results(country, postal_code, radius_km)
+
+
+def test_index_skips_haversine_for_small_radius_non_candidates(monkeypatch):
+    _, all_postal_codes, _ = postal_api.load_postal_codes()
+    calls = 0
+    original_distance = postal_api.distance_km
+
+    def count_distance(first, second):
+        nonlocal calls
+        calls += 1
+        return original_distance(first, second)
+
+    monkeypatch.setattr(postal_api, "distance_km", count_distance)
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "01067", "radius_km": 3},
+    )
+
+    assert response.status_code == 200
+    assert calls < len(all_postal_codes)
