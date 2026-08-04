@@ -83,6 +83,7 @@ def test_nearby_preserves_leading_zero_and_returns_distance_zero():
         "order": "asc",
         "limit": 1000,
         "offset": 0,
+        "localities_only": True,
     }
     assert payload["results"][0]["postal_code"] == "01067"
     assert payload["results"][0]["city_name"] == "Dresden"
@@ -127,6 +128,44 @@ def test_nearby_rejects_invalid_input_and_unknown_postal_code():
     assert unknown.get_json()["error"]["code"] == "postal_code_not_found"
 
 
+def test_nearby_localities_only_defaults_to_true_and_false_keeps_raw_records():
+    base_query = {"country": "DE", "postal_code": "76327", "radius_km": "15", "limit": "1000"}
+    excluded_names = {
+        "CCI Kosmetik Versand e.K.",
+        "dm-drogeriemarkt GmbH & Co KG",
+        "Angiomed AG",
+        "EnBW Contracting GmbH",
+    }
+
+    default_payload = client().get("/v1/postal-codes/nearby", query_string=base_query).get_json()
+    true_payload = client().get(
+        "/v1/postal-codes/nearby", query_string={**base_query, "localities_only": "true"}
+    ).get_json()
+    raw_payload = client().get(
+        "/v1/postal-codes/nearby", query_string={**base_query, "localities_only": "false"}
+    ).get_json()
+
+    assert default_payload["query"]["localities_only"] is True
+    assert true_payload["results"] == default_payload["results"]
+    assert "Pfinztal" in {item["city_name"] for item in default_payload["results"]}
+    assert excluded_names.isdisjoint({item["city_name"] for item in default_payload["results"]})
+    assert excluded_names <= {item["city_name"] for item in raw_payload["results"]}
+    assert raw_payload["results"] == brute_force_results("DE", "76327", 15, localities_only=False)
+    assert raw_payload["total_results"] > default_payload["total_results"]
+
+
+def test_nearby_rejects_invalid_localities_only_boolean():
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "76327", "radius_km": "15", "localities_only": "yes"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": {"code": "invalid_request", "message": "localities_only must be true or false"}
+    }
+
+
 def test_nearby_rejects_radius_over_configured_maximum(monkeypatch):
     monkeypatch.setenv("MAX_RADIUS_KM", "25")
     response = client().get(
@@ -158,11 +197,14 @@ def test_nearby_rejects_invalid_limit_and_offset():
         assert response.get_json() == {"error": {"code": "invalid_request", "message": message}}
 
 
-def brute_force_results(country: str, postal_code: str, radius_km: int):
+def brute_force_results(country: str, postal_code: str, radius_km: int, localities_only: bool = True):
     by_postal_code, all_postal_codes, _ = postal_api.load_postal_codes()
+    non_locality_postal_codes = postal_api.load_non_locality_postal_codes()
     origin = by_postal_code[(country, postal_code)]
     results = []
     for candidate in all_postal_codes:
+        if localities_only and (candidate["country"], candidate["postal_code"]) in non_locality_postal_codes:
+            continue
         distance = postal_api.distance_km(origin, candidate)
         if distance <= radius_km:
             results.append(

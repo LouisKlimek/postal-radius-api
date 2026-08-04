@@ -38,6 +38,7 @@ Optional query parameters:
 - `order`: `asc` (default) or `desc`
 - `limit`: positive integer number of records to return (default and maximum: `1000`)
 - `offset`: zero-based number of matching records to skip (default: `0`)
+- `localities_only`: `true` (default) returns locality postal areas only; set to `false` to opt in to every retained GeoNames postal record, including company, authority, and delivery labels.
 
 `MAX_RADIUS_KM` caps accepted radius values. It defaults to `500`; set it when starting the service to use a smaller operational bound, for example `MAX_RADIUS_KM=250 gunicorn --bind :9090 app:app`.
 
@@ -106,6 +107,12 @@ An unknown country/postal-code pair returns HTTP 404 with:
 `data/dach_postal_centroids_geonames_2026-08-03.csv` is a versioned, image-local DACH postal-code centroid dataset generated from the GeoNames postal-code export for DE, AT, and CH, downloaded on 2026-08-03. GeoNames data is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); attribution: [GeoNames](https://www.geonames.org/).
 
 The GeoNames export can contain more than one row for a country/postal-code pair. During generation, this service deterministically selects the lexicographically smallest tuple `(city_name, latitude, longitude)` for that pair. Therefore the selected `city_name` is stable and documented, rather than dependent on source-file ordering.
+
+### Locality classification
+
+`data/non_locality_postal_codes_geonames_2026-08-03.csv` is the version-controlled locality classifier. It contains exact `(country, postal_code)` records from the versioned GeoNames selection that were manually reviewed on 2026-08-04 and classified as a company, authority, or delivery label rather than a locality postal area. Runtime filtering uses these exact keys only; it never infers a classification from a name substring. `localities_only=true` excludes those records before distance calculation, ordering, and pagination; `localities_only=false` bypasses the classifier and returns the prior raw result basis.
+
+The classifier is intentionally conservative and its coverage is limited to the explicitly reviewed GeoNames labels in the file. GeoNames itself is not an authoritative municipal-register dataset, so a future data refresh or a newly observed non-locality label must be reviewed and added as an exact keyed record. Clients requiring unfiltered source labels should use `localities_only=false`.
 
 ### Runtime data lifecycle and in-memory spatial index
 
