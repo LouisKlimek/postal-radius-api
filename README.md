@@ -38,6 +38,7 @@ Optional query parameters:
 - `order`: `asc` (default) or `desc`
 - `limit`: positive integer number of records to return (default and maximum: `1000`)
 - `offset`: zero-based number of matching records to skip (default: `0`)
+- `localities_only`: `true` (default) returns only OpenPLZ `Locality` entities with an exact coordinate enrichment; `false` returns the complete prior GeoNames raw dataset, including delivery, company, and authority labels. Only the literal boolean values `true` and `false` are accepted (case-insensitive).
 
 `MAX_RADIUS_KM` caps accepted radius values. It defaults to `500`; set it when starting the service to use a smaller operational bound, for example `MAX_RADIUS_KM=250 gunicorn --bind :9090 app:app`.
 
@@ -66,6 +67,8 @@ curl --get 'http://localhost:9090/v1/postal-codes/nearby' \
 ```
 
 Successful responses contain normalized input under `query` and ordered `results`. Every result contains `country`, `postal_code`, `city_name`, and `distance_km` (rounded to three decimal places). Distances use the Haversine great-circle calculation with the IUGG mean Earth radius (6,371.0088 km). Results outside the requested radius are omitted.
+
+`localities_only` is also reflected as a boolean in the normalized `query` object. The lookup postal code is always resolved from the raw GeoNames lookup so a caller can search around a delivery postal code; in `localities_only=true` mode, only result candidates come from the OpenPLZ locality snapshot.
 
 ### Pagination compatibility
 
@@ -103,15 +106,19 @@ An unknown country/postal-code pair returns HTTP 404 with:
 
 ## Data
 
-`data/dach_postal_centroids_geonames_2026-08-03.csv` is a versioned, image-local DACH postal-code centroid dataset generated from the GeoNames postal-code export for DE, AT, and CH, downloaded on 2026-08-03. GeoNames data is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); attribution: [GeoNames](https://www.geonames.org/).
+`data/dach_postal_centroids_geonames_2026-08-03.csv` is the versioned, image-local DACH postal-code centroid dataset generated from the GeoNames postal-code export for DE, AT, and CH, downloaded on 2026-08-03. GeoNames data is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); attribution: [GeoNames](https://www.geonames.org/). It remains the raw dataset used by `localities_only=false` and for locating every request origin.
+
+`data/dach_localities_openplz_2026-08-04.csv` is the versioned `localities_only=true` candidate snapshot. Its classification source is the public OpenPLZ `/de/Localities`, `/at/Localities`, and `/ch/Localities` endpoints. The source-native classification is the `Locality` entity itself: each entity carries `postalCode`, `name`, and administrative-unit metadata. No GeoNames row is classified by its name and no local maintainership list or heuristic is used.
+
+OpenPLZ's API OpenAPI document links to the project license, and the [OpenPLZ data repository](https://github.com/openpotato/openplzapi.data) is licensed under [ODbL-1.0](https://github.com/openpotato/openplzapi.data/blob/main/LICENSE). This snapshot contains only OpenPLZ `Locality` entities. Coordinates are retained only when an already accepted `(country, postalCode, name)` tuple exactly equals a GeoNames `(country, postal_code, city_name)` tuple; this is technical coordinate enrichment, not classification. At the 2026-08-04 snapshot, 37,603 OpenPLZ entities yielded 12,741 country/postal-code records with exact coordinates. Localities without that exact enrichment are intentionally absent from localities-only radius results.
 
 The GeoNames export can contain more than one row for a country/postal-code pair. During generation, this service deterministically selects the lexicographically smallest tuple `(city_name, latitude, longitude)` for that pair. Therefore the selected `city_name` is stable and documented, rather than dependent on source-file ordering.
 
 ### Runtime data lifecycle and in-memory spatial index
 
-The versioned GeoNames DACH CSV is copied into the Docker image and remains the canonical runtime dataset. Container startup does not call an external Geo API, open a database connection, import the CSV into another store, or run a migration. The service instead reads the image-local CSV on its first data use.
+Both versioned CSVs are copied into the Docker image. Container startup does not call an external Geo API, open a database connection, import the CSV into another store, or run a migration. The service instead reads the image-local CSVs on their first data use.
 
-That first load parses the CSV and deterministically assigns every canonical record to a 1° latitude/longitude grid cell, retaining the resulting spatial index and postal-code lookup map in memory for later requests. Gunicorn workers are separate processes, so each worker builds and retains its own cache on first use. The cache is rebuilt only when a worker first loads a newly deployed CSV; there is no separate index artifact or migration. To update data, replace the versioned CSV and update `DATA_FILE` as described below, then rebuild/restart the image.
+That first load parses each CSV and deterministically assigns every record to a 1° latitude/longitude grid cell, retaining the resulting spatial index and postal-code lookup map in memory for later requests. Gunicorn workers are separate processes, so each worker builds and retains its own cache on first use. The cache is rebuilt only when a worker first loads a newly deployed CSV; there is no separate index artifact or migration. To update data, replace the versioned CSVs and update the filename constants as described below, then rebuild/restart the image.
 
 For a nearby request, the service derives a latitude/longitude bounding box from the requested radius, enumerates only intersecting grid cells, then applies a record-level bounding-box filter before running Haversine. Haversine remains the final inclusion decision, so the response preserves exact-radius semantics, city names, and ordering. Longitude extent uses the spherical bound and a pole-safe guard; all supported DACH locations are within its normal range.
 
@@ -123,7 +130,17 @@ This trade-off is deliberate rather than permanent: a materially larger or dynam
 
 ### Update data
 
-Download `https://download.geonames.org/export/zip/DE.zip`, `AT.zip`, and `CH.zip`; read each tab-separated `<COUNTRY>.txt`; group by `(country, postal_code)`; choose the smallest `(place_name, latitude, longitude)` tuple; then write the resulting CSV with the same header and a new date-stamped filename. Update `DATA_FILE` in `app.py`, this README's version/date, and run the tests before building an image.
+For the raw GeoNames update, download `https://download.geonames.org/export/zip/DE.zip`, `AT.zip`, and `CH.zip`; read each tab-separated `<COUNTRY>.txt`; group by `(country, postal_code)`; choose the smallest `(place_name, latitude, longitude)` tuple; then write the raw CSV with the same header and a new date-stamped filename.
+
+For the locality snapshot, after creating the raw CSV run:
+
+```bash
+python3 scripts/build_openplz_localities_snapshot.py \
+  data/<raw-geonames-file>.csv \
+  data/dach_localities_openplz_<YYYY-MM-DD>.csv
+```
+
+The script pages the three OpenPLZ `Localities` endpoints using postal-code first digits, accepts only returned `Locality` entities, and writes only exact tuple coordinate enrichments. Update `RAW_DATA_FILE` and `LOCALITIES_DATA_FILE` in `app.py`, this README's dates/counts, and run the tests before building an image.
 
 ## Local development and tests
 

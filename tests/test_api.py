@@ -83,6 +83,7 @@ def test_nearby_preserves_leading_zero_and_returns_distance_zero():
         "order": "asc",
         "limit": 1000,
         "offset": 0,
+        "localities_only": True,
     }
     assert payload["results"][0]["postal_code"] == "01067"
     assert payload["results"][0]["city_name"] == "Dresden"
@@ -113,6 +114,7 @@ def test_nearby_rejects_invalid_input_and_unknown_postal_code():
         {"country": "XX", "postal_code": "01067", "radius_km": "1"},
         {"country": "DE", "postal_code": "01067", "radius_km": "0"},
         {"country": "DE", "postal_code": "01067", "radius_km": "1", "order": "up"},
+        {"country": "DE", "postal_code": "01067", "radius_km": "1", "localities_only": "yes"},
     ]
     for query in invalid_cases:
         invalid = client().get("/v1/postal-codes/nearby", query_string=query)
@@ -158,8 +160,11 @@ def test_nearby_rejects_invalid_limit_and_offset():
         assert response.get_json() == {"error": {"code": "invalid_request", "message": message}}
 
 
-def brute_force_results(country: str, postal_code: str, radius_km: int):
-    by_postal_code, all_postal_codes, _ = postal_api.load_postal_codes()
+def brute_force_results(country: str, postal_code: str, radius_km: int, localities_only: bool = True):
+    by_postal_code, _, _ = postal_api.load_postal_codes()
+    _, all_postal_codes, _ = postal_api.load_postal_codes(
+        postal_api.LOCALITIES_DATA_FILE if localities_only else postal_api.RAW_DATA_FILE
+    )
     origin = by_postal_code[(country, postal_code)]
     results = []
     for candidate in all_postal_codes:
@@ -247,3 +252,34 @@ def test_nearby_descending_order_has_stable_country_postal_tiebreaker():
 
     results = response.get_json()["results"]
     assert results == sorted(results, key=lambda item: (-item["distance_km"], item["country"], item["postal_code"]))
+
+
+def test_nearby_localities_only_defaults_to_openplz_locality_snapshot():
+    query = {"country": "DE", "postal_code": "76107", "radius_km": "1"}
+    default_response = client().get("/v1/postal-codes/nearby", query_string=query)
+    explicit_true_response = client().get(
+        "/v1/postal-codes/nearby", query_string={**query, "localities_only": "true"}
+    )
+    raw_response = client().get(
+        "/v1/postal-codes/nearby", query_string={**query, "localities_only": "false"}
+    )
+
+    assert default_response.status_code == explicit_true_response.status_code == raw_response.status_code == 200
+    assert default_response.get_json() == explicit_true_response.get_json()
+    assert default_response.get_json()["query"]["localities_only"] is True
+    assert raw_response.get_json()["query"]["localities_only"] is False
+    assert all(result["postal_code"] != "76107" for result in default_response.get_json()["results"])
+    assert any(result["postal_code"] == "76107" for result in raw_response.get_json()["results"])
+    assert raw_response.get_json()["results"] == brute_force_results("DE", "76107", 1, localities_only=False)
+
+
+def test_nearby_rejects_non_boolean_localities_only():
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={**valid_nearby_query(), "localities_only": "1"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": {"code": "invalid_request", "message": "localities_only must be true or false"}
+    }
