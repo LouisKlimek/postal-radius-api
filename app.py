@@ -12,7 +12,8 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request
 
-DATA_FILE = Path(__file__).with_name("data") / "dach_postal_centroids_geonames_2026-08-03.csv"
+RAW_DATA_FILE = Path(__file__).with_name("data") / "dach_postal_centroids_geonames_2026-08-03.csv"
+LOCALITIES_DATA_FILE = Path(__file__).with_name("data") / "dach_localities_openplz_2026-08-04.csv"
 EARTH_RADIUS_KM = 6371.0088
 VALID_COUNTRIES = {"DE", "AT", "CH"}
 VALID_ORDERS = {"asc", "desc"}
@@ -23,15 +24,15 @@ MAX_LIMIT = 1000
 DEFAULT_RATE_LIMIT_PER_MINUTE = 120
 
 
-@lru_cache(maxsize=1)
-def load_postal_codes() -> tuple[
+@lru_cache(maxsize=2)
+def load_postal_codes(data_file: Path = RAW_DATA_FILE) -> tuple[
     dict[tuple[str, str], dict[str, object]],
     tuple[dict[str, object], ...],
     dict[tuple[int, int], tuple[dict[str, object], ...]],
 ]:
     by_postal_code: dict[tuple[str, str], dict[str, object]] = {}
     grid: dict[tuple[int, int], list[dict[str, object]]] = {}
-    with DATA_FILE.open(encoding="utf-8", newline="") as source:
+    with data_file.open(encoding="utf-8", newline="") as source:
         for row in csv.DictReader(source):
             record = {
                 "country": row["country"],
@@ -145,6 +146,7 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
     order = request.args.get("order", "asc").strip().lower()
     limit_value = request.args.get("limit", str(DEFAULT_LIMIT)).strip()
     offset_value = request.args.get("offset", "0").strip()
+    localities_only_value = request.args.get("localities_only", "true").strip().lower()
 
     if country not in VALID_COUNTRIES:
         return None, error_response(400, "invalid_request", "country must be one of DE, AT, CH")
@@ -164,6 +166,8 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
         return None, error_response(400, "invalid_request", "limit must be an integer between 1 and 1000")
     if not offset_value.isdigit():
         return None, error_response(400, "invalid_request", "offset must be a non-negative integer")
+    if localities_only_value not in {"true", "false"}:
+        return None, error_response(400, "invalid_request", "localities_only must be true or false")
     return {
         "country": country,
         "postal_code": postal_code,
@@ -171,6 +175,7 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
         "order": order,
         "limit": int(limit_value),
         "offset": int(offset_value),
+        "localities_only": localities_only_value == "true",
     }, None
 
 
@@ -217,10 +222,12 @@ def create_app() -> Flask:
             return query_error
         assert query is not None
 
-        by_postal_code, _, grid = load_postal_codes()
+        by_postal_code, _, raw_grid = load_postal_codes()
         origin = by_postal_code.get((query["country"], query["postal_code"]))
         if origin is None:
             return error_response(404, "postal_code_not_found", "postal_code was not found for country")
+
+        grid = load_postal_codes(LOCALITIES_DATA_FILE)[2] if query["localities_only"] else raw_grid
 
         minimum_latitude, maximum_latitude, minimum_longitude, maximum_longitude = bounding_box(
             origin, query["radius_km"]
