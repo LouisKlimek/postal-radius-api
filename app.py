@@ -148,6 +148,7 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
     limit_value = request.args.get("limit", str(DEFAULT_LIMIT)).strip()
     offset_value = request.args.get("offset", "0").strip()
     localities_only_value = request.args.get("localities_only", "true").strip().lower()
+    include_cross_border_value = request.args.get("include_cross_border", "false").strip().lower()
 
     if country not in VALID_COUNTRIES:
         return None, error_response(400, "invalid_request", "country must be one of DE, AT, CH")
@@ -169,6 +170,8 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
         return None, error_response(400, "invalid_request", "offset must be a non-negative integer")
     if localities_only_value not in {"true", "false"}:
         return None, error_response(400, "invalid_request", "localities_only must be true or false")
+    if include_cross_border_value not in {"true", "false"}:
+        return None, error_response(400, "invalid_request", "include_cross_border must be true or false")
     return {
         "country": country,
         "postal_code": postal_code,
@@ -177,6 +180,7 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
         "limit": int(limit_value),
         "offset": int(offset_value),
         "localities_only": localities_only_value == "true",
+        "include_cross_border": include_cross_border_value == "true",
     }, None
 
 
@@ -247,6 +251,8 @@ def create_app() -> Flask:
             minimum_longitude,
             maximum_longitude,
         ):
+            if not query["include_cross_border"] and candidate["country"] != origin["country"]:
+                continue
             calculated_distance = distance_km(origin, candidate)
             if calculated_distance <= query["radius_km"]:
                 results.append({

@@ -97,6 +97,7 @@ def test_nearby_preserves_leading_zero_and_returns_distance_zero():
         "limit": 1000,
         "offset": 0,
         "localities_only": True,
+        "include_cross_border": False,
     }
     assert payload["results"][0]["postal_code"] == "01067"
     assert payload["results"][0]["city_name"] == "Dresden"
@@ -173,7 +174,13 @@ def test_nearby_rejects_invalid_limit_and_offset():
         assert response.get_json() == {"error": {"code": "invalid_request", "message": message}}
 
 
-def brute_force_results(country: str, postal_code: str, radius_km: int, localities_only: bool = True):
+def brute_force_results(
+    country: str,
+    postal_code: str,
+    radius_km: int,
+    localities_only: bool = True,
+    include_cross_border: bool = False,
+):
     by_postal_code, _, _ = postal_api.load_postal_codes()
     _, all_postal_codes, _ = postal_api.load_postal_codes(
         postal_api.LOCALITIES_DATA_FILE if localities_only else postal_api.RAW_DATA_FILE
@@ -181,6 +188,8 @@ def brute_force_results(country: str, postal_code: str, radius_km: int, localiti
     origin = by_postal_code[(country, postal_code)]
     results = []
     for candidate in all_postal_codes:
+        if not include_cross_border and candidate["country"] != origin["country"]:
+            continue
         distance = postal_api.distance_km(origin, candidate)
         if distance <= radius_km:
             results.append(
@@ -296,3 +305,31 @@ def test_nearby_rejects_non_boolean_localities_only():
     assert response.get_json() == {
         "error": {"code": "invalid_request", "message": "localities_only must be true or false"}
     }
+
+
+def test_nearby_excludes_cross_border_candidates_unless_explicitly_enabled(monkeypatch):
+    origin = {"country": "DE", "postal_code": "10000", "city_name": "Origin", "latitude": 0.0, "longitude": 0.0}
+    same_country = {"country": "DE", "postal_code": "10001", "city_name": "Domestic", "latitude": 0.0, "longitude": 0.01}
+    cross_border = {"country": "CH", "postal_code": "20000", "city_name": "Cross-border", "latitude": 0.0, "longitude": 0.02}
+    records = (origin, same_country, cross_border)
+    by_postal_code = {(record["country"], record["postal_code"]): record for record in records}
+    grid = {(0, 0): records}
+    monkeypatch.setattr(postal_api, "load_postal_codes", lambda *args: (by_postal_code, records, grid))
+
+    default_response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "10000", "radius_km": "3"},
+    )
+    cross_border_response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={
+            "country": "DE",
+            "postal_code": "10000",
+            "radius_km": "3",
+            "include_cross_border": "true",
+        },
+    )
+
+    assert default_response.status_code == cross_border_response.status_code == 200
+    assert {result["country"] for result in default_response.get_json()["results"]} == {"DE"}
+    assert {result["country"] for result in cross_border_response.get_json()["results"]} == {"DE", "CH"}
