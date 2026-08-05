@@ -39,6 +39,7 @@ Optional query parameters:
 - `limit`: positive integer number of records to return (default and maximum: `1000`)
 - `offset`: zero-based number of matching records to skip (default: `0`)
 - `localities_only`: `true` (default) returns only OpenPLZ `Locality` entities with an exact coordinate enrichment; `false` returns the complete prior GeoNames raw dataset, including delivery, company, and authority labels. Only the literal boolean values `true` and `false` are accepted (case-insensitive).
+- `include_cross_border`: `false` (default) returns only records whose country metadata matches the resolved origin postal code. Set it explicitly to `true` to include postal codes from other countries within the radius. Only the literal boolean values `true` and `false` are accepted (case-insensitive).
 
 `MAX_RADIUS_KM` caps accepted radius values. It defaults to `500`; set it when starting the service to use a smaller operational bound, for example `MAX_RADIUS_KM=250 gunicorn --bind :9090 app:app`.
 
@@ -68,7 +69,7 @@ curl --get 'http://localhost:9090/v1/postal-codes/nearby' \
 
 Successful responses contain normalized input under `query` and ordered `results`. Every result contains `country`, `postal_code`, `city_name`, and `distance_km` (rounded to three decimal places). Distances use [GeographicLib](https://geographiclib.sourceforge.io/)’s WGS84 ellipsoid inverse geodesic calculation: input coordinates are latitude/longitude degrees, GeographicLib returns metres, and the API returns kilometres. Results outside the requested radius are omitted.
 
-`localities_only` is also reflected as a boolean in the normalized `query` object. The lookup postal code is always resolved from the raw GeoNames lookup so a caller can search around a delivery postal code; in `localities_only=true` mode, only result candidates come from the OpenPLZ locality snapshot.
+`localities_only` and `include_cross_border` are reflected as booleans in the normalized `query` object. The lookup postal code is always resolved from the raw GeoNames lookup so a caller can search around a delivery postal code; in `localities_only=true` mode, only result candidates come from the OpenPLZ locality snapshot. The country restriction uses the resolved origin's dataset metadata, not a hard-coded country assumption.
 
 ### Pagination compatibility
 
