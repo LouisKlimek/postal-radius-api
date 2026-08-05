@@ -66,7 +66,7 @@ curl --get 'http://localhost:9090/v1/postal-codes/nearby' \
   --data-urlencode order=asc
 ```
 
-Successful responses contain normalized input under `query` and ordered `results`. Every result contains `country`, `postal_code`, `city_name`, and `distance_km` (rounded to three decimal places). Distances use the Haversine great-circle calculation with the IUGG mean Earth radius (6,371.0088 km). Results outside the requested radius are omitted.
+Successful responses contain normalized input under `query` and ordered `results`. Every result contains `country`, `postal_code`, `city_name`, and `distance_km` (rounded to three decimal places). Distances use [GeographicLib](https://geographiclib.sourceforge.io/)’s WGS84 ellipsoid inverse geodesic calculation: input coordinates are latitude/longitude degrees, GeographicLib returns metres, and the API returns kilometres. Results outside the requested radius are omitted.
 
 `localities_only` is also reflected as a boolean in the normalized `query` object. The lookup postal code is always resolved from the raw GeoNames lookup so a caller can search around a delivery postal code; in `localities_only=true` mode, only result candidates come from the OpenPLZ locality snapshot.
 
@@ -120,7 +120,7 @@ Both versioned CSVs are copied into the Docker image. Container startup does not
 
 That first load parses each CSV and deterministically assigns every record to a 1° latitude/longitude grid cell, retaining the resulting spatial index and postal-code lookup map in memory for later requests. Gunicorn workers are separate processes, so each worker builds and retains its own cache on first use. The cache is rebuilt only when a worker first loads a newly deployed CSV; there is no separate index artifact or migration. To update data, replace the versioned CSVs and update the filename constants as described below, then rebuild/restart the image.
 
-For a nearby request, the service derives a latitude/longitude bounding box from the requested radius, enumerates only intersecting grid cells, then applies a record-level bounding-box filter before running Haversine. Haversine remains the final inclusion decision, so the response preserves exact-radius semantics, city names, and ordering. Longitude extent uses the spherical bound and a pole-safe guard; all supported DACH locations are within its normal range.
+For a nearby request, the service derives a latitude/longitude bounding box from the requested radius, enumerates only intersecting grid cells, then applies a record-level bounding-box filter before running the WGS84 inverse geodesic calculation. The geodesic remains the final inclusion decision, so the response preserves exact-radius semantics, city names, and ordering. Longitude extent uses the spherical bound and a pole-safe guard; all supported DACH locations are within its normal range.
 
 ### Why this service has no database
 

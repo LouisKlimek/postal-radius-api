@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from flask import Flask, jsonify, request
+from geographiclib.geodesic import Geodesic
 
 RAW_DATA_FILE = Path(__file__).with_name("data") / "dach_postal_centroids_geonames_2026-08-03.csv"
 LOCALITIES_DATA_FILE = Path(__file__).with_name("data") / "dach_localities_openplz_2026-08-04.csv"
@@ -180,12 +181,18 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
 
 
 def distance_km(first: dict[str, object], second: dict[str, object]) -> float:
-    latitude_1, longitude_1 = math.radians(first["latitude"]), math.radians(first["longitude"])
-    latitude_2, longitude_2 = math.radians(second["latitude"]), math.radians(second["longitude"])
-    latitude_delta = latitude_2 - latitude_1
-    longitude_delta = longitude_2 - longitude_1
-    a = math.sin(latitude_delta / 2) ** 2 + math.cos(latitude_1) * math.cos(latitude_2) * math.sin(longitude_delta / 2) ** 2
-    return EARTH_RADIUS_KM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    """Return the WGS84 ellipsoid geodesic distance in kilometres.
+
+    GeographicLib accepts latitude then longitude in degrees and returns ``s12``
+    in metres, so the public API continues returning kilometres.
+    """
+    inverse = Geodesic.WGS84.Inverse(
+        float(first["latitude"]),
+        float(first["longitude"]),
+        float(second["latitude"]),
+        float(second["longitude"]),
+    )
+    return float(inverse["s12"]) / 1000
 
 
 def create_app() -> Flask:
