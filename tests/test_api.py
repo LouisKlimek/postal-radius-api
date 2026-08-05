@@ -1,3 +1,5 @@
+import pytest
+
 import app as postal_api
 from app import create_app
 
@@ -66,6 +68,17 @@ def test_rate_limit_configuration_and_proxy_trust_boundary(monkeypatch):
     assert trusted_client.get(
         "/v1/postal-codes/nearby", query_string=valid_nearby_query(), headers={"X-Forwarded-For": "198.51.100.2"}
     ).status_code == 200
+
+
+def test_distance_km_uses_wgs84_reference_geodesics():
+    # GeographicLib WGS84 inverse examples; inputs are latitude/longitude degrees.
+    new_york = {"latitude": 40.6, "longitude": -73.8}
+    london = {"latitude": 51.6, "longitude": -0.5}
+    wellington = {"latitude": -41.32, "longitude": 174.81}
+    salamanca = {"latitude": 40.96, "longitude": -5.5}
+
+    assert postal_api.distance_km(new_york, london) == pytest.approx(5551.759400, abs=0.001)
+    assert postal_api.distance_km(wellington, salamanca) == pytest.approx(19959.679267, abs=0.001)
 
 
 def test_nearby_preserves_leading_zero_and_returns_distance_zero():
