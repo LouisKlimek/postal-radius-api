@@ -104,6 +104,27 @@ def test_nearby_preserves_leading_zero_and_returns_distance_zero():
     assert payload["results"][0]["distance_km"] == 0.0
 
 
+def test_nearby_accepts_float_radius_km():
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "01067", "radius_km": "50.0"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["query"]["radius_km"] == 50.0
+
+
+@pytest.mark.parametrize("radius_km", ["0", "-1", "not-a-number", "nan", "inf", "-inf"])
+def test_nearby_rejects_non_positive_non_numeric_and_non_finite_radius_km(radius_km):
+    response = client().get(
+        "/v1/postal-codes/nearby",
+        query_string={"country": "DE", "postal_code": "01067", "radius_km": radius_km},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_request"
+
+
 def test_nearby_honors_radius_boundary_and_descending_order():
     response = client().get(
         "/v1/postal-codes/nearby",
