@@ -54,7 +54,7 @@ def load_postal_codes(data_file: Path = RAW_DATA_FILE) -> tuple[
     return by_postal_code, all_postal_codes, {cell: tuple(records) for cell, records in grid.items()}
 
 
-def bounding_box(origin: dict[str, object], radius_km: int) -> tuple[float, float, float, float]:
+def bounding_box(origin: dict[str, object], radius_km: float) -> tuple[float, float, float, float]:
     latitude_delta = math.degrees(radius_km / EARTH_RADIUS_KM)
     latitude = float(origin["latitude"])
     longitude = float(origin["longitude"])
@@ -154,9 +154,13 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
         return None, error_response(400, "invalid_request", "country must be one of DE, AT, CH")
     if not postal_code:
         return None, error_response(400, "invalid_request", "postal_code is required")
-    if not radius_value.isdigit() or int(radius_value) <= 0:
-        return None, error_response(400, "invalid_request", "radius_km must be a positive integer")
-    if int(radius_value) > max_radius_km:
+    try:
+        radius_km = float(radius_value)
+    except ValueError:
+        return None, error_response(400, "invalid_request", "radius_km must be a positive finite number")
+    if not math.isfinite(radius_km) or radius_km <= 0:
+        return None, error_response(400, "invalid_request", "radius_km must be a positive finite number")
+    if radius_km > max_radius_km:
         return None, error_response(
             400,
             "invalid_request",
@@ -175,7 +179,7 @@ def parse_query(max_radius_km: int) -> tuple[dict[str, object] | None, tuple[obj
     return {
         "country": country,
         "postal_code": postal_code,
-        "radius_km": int(radius_value),
+        "radius_km": radius_km,
         "order": order,
         "limit": int(limit_value),
         "offset": int(offset_value),
@@ -232,6 +236,8 @@ def create_app() -> Flask:
         if query_error:
             return query_error
         assert query is not None
+        radius_km = query["radius_km"]
+        assert isinstance(radius_km, float)
 
         by_postal_code, _, raw_grid = load_postal_codes()
         origin = by_postal_code.get((query["country"], query["postal_code"]))
@@ -241,7 +247,7 @@ def create_app() -> Flask:
         grid = load_postal_codes(LOCALITIES_DATA_FILE)[2] if query["localities_only"] else raw_grid
 
         minimum_latitude, maximum_latitude, minimum_longitude, maximum_longitude = bounding_box(
-            origin, query["radius_km"]
+            origin, radius_km
         )
         results = []
         for candidate in grid_candidates(
@@ -254,7 +260,7 @@ def create_app() -> Flask:
             if not query["include_cross_border"] and candidate["country"] != origin["country"]:
                 continue
             calculated_distance = distance_km(origin, candidate)
-            if calculated_distance <= query["radius_km"]:
+            if calculated_distance <= radius_km:
                 results.append({
                     "country": candidate["country"],
                     "postal_code": candidate["postal_code"],

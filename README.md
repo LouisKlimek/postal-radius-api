@@ -31,7 +31,7 @@ Required query parameters:
 
 - `country`: `DE`, `AT`, or `CH` (case-insensitive; normalized to upper-case)
 - `postal_code`: postal code as a string; leading zeroes are retained
-- `radius_km`: positive integer radius in kilometres
+- `radius_km`: positive finite numeric radius in kilometres (integers and decimals accepted)
 
 Optional query parameters:
 
